@@ -18,10 +18,10 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 
-const STORAGE_KEY = '@student_activities';
+// ATENÇÃO: Troque 'SEU_IP_LOCAL' pelo IP do seu computador na rede
+const API_URL = 'http://SEU_IP_LOCAL:3000/api/activities';
 
 export default function App() {
   const [activities, setActivities] = useState([]);
@@ -39,7 +39,7 @@ export default function App() {
     priority: 'medium'
   });
 
-  // Buscar atividades
+  // Buscar atividades da API
   useEffect(() => {
     fetchActivities();
   }, []);
@@ -47,87 +47,54 @@ export default function App() {
   const fetchActivities = async () => {
     try {
       setLoading(true);
-      const savedActivities = await AsyncStorage.getItem(STORAGE_KEY);
-      if (savedActivities) {
-        setActivities(JSON.parse(savedActivities));
-      } else {
-        // Dados iniciais de exemplo
-        const initialData = [
-          {
-            id: 1,
-            title: 'Prova de Matemática',
-            description: 'Estudar capítulos 5 e 6',
-            date: '2024-01-20',
-            time: '14:00',
-            subject: 'Matemática',
-            priority: 'high',
-            completed: false
-          },
-          {
-            id: 2,
-            title: 'Trabalho de História',
-            description: 'Pesquisa sobre Revolução Industrial',
-            date: '2024-01-22',
-            time: '23:59',
-            subject: 'História',
-            priority: 'medium',
-            completed: false
-          }
-        ];
-        setActivities(initialData);
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(initialData));
+      const response = await fetch(API_URL);
+      if (!response.ok) {
+        throw new Error('Erro de rede ou servidor');
       }
+      const data = await response.json();
+      setActivities(data);
     } catch (err) {
-      Alert.alert('Erro', 'Não foi possível carregar as atividades');
+      Alert.alert('Erro', `Não foi possível carregar as atividades. Verifique sua conexão e o endereço da API. Detalhes: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Salvar no AsyncStorage sempre que activities mudar
-  useEffect(() => {
-    if (activities.length > 0 || loading === false) {
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(activities));
-    }
-  }, [activities]);
-
-  // Criar ou atualizar atividade
+  // Criar ou atualizar atividade na API
   const handleSubmit = async () => {
     if (!formData.title || !formData.description || !formData.subject) {
-      Alert.alert('Erro', 'Por favor, preencha todos os campos');
+      Alert.alert('Atenção', 'Por favor, preencha todos os campos.');
       return;
     }
 
-    try {
-      const activityData = {
-        title: formData.title,
-        description: formData.description,
-        date: formData.date.toISOString().split('T')[0],
-        time: formData.time.toTimeString().split(' ')[0].slice(0, 5),
-        subject: formData.subject,
-        priority: formData.priority,
-        completed: false
-      };
+    const method = editingActivity ? 'PUT' : 'POST';
+    const url = editingActivity ? `${API_URL}/${editingActivity._id}` : API_URL;
 
-      if (editingActivity) {
-        const updatedActivities = activities.map(activity =>
-          activity.id === editingActivity.id
-            ? { ...activity, ...activityData }
-            : activity
-        );
-        setActivities(updatedActivities);
-      } else {
-        const newActivity = {
-          id: Date.now(),
-          ...activityData
-        };
-        setActivities([...activities, newActivity]);
+    const activityData = {
+      ...formData,
+      date: formData.date.toISOString().split('T')[0], // Formato YYYY-MM-DD
+      time: formData.time.toTimeString().split(' ')[0].slice(0, 5), // Formato HH:MM
+    };
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(activityData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Erro ao salvar a atividade');
       }
       
-      resetForm();
       Alert.alert('Sucesso', 'Atividade salva com sucesso!');
+      resetForm();
+      fetchActivities(); // Atualiza a lista
     } catch (err) {
-      Alert.alert('Erro', 'Não foi possível salvar a atividade');
+      Alert.alert('Erro', `Não foi possível salvar a atividade. Detalhes: ${err.message}`);
     }
   };
 
@@ -143,9 +110,14 @@ export default function App() {
           style: 'destructive',
           onPress: async () => {
             try {
-              setActivities(activities.filter(activity => activity.id !== id));
+              const response = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+              if (!response.ok) {
+                throw new Error('Erro ao excluir');
+              }
+              // Remove o item da lista localmente para uma resposta visual rápida
+              setActivities(prevActivities => prevActivities.filter(activity => activity._id !== id));
             } catch (err) {
-              Alert.alert('Erro', 'Não foi possível excluir a atividade');
+              Alert.alert('Erro', 'Não foi possível excluir a atividade.');
             }
           }
         }
@@ -153,17 +125,30 @@ export default function App() {
     );
   };
 
-  // Marcar como concluída
-  const toggleComplete = async (id) => {
+  // Marcar como concluída / Reabrir
+  const toggleComplete = async (activity) => {
+    const updatedActivityData = { ...activity, completed: !activity.completed };
+
     try {
-      const updatedActivities = activities.map(activity =>
-        activity.id === id
-          ? { ...activity, completed: !activity.completed }
-          : activity
+      const response = await fetch(`${API_URL}/${activity._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updatedActivityData),
+      });
+
+      if (!response.ok) {
+        throw new Error('Erro ao atualizar');
+      }
+      
+      // Atualiza a lista localmente
+      const updatedActivities = activities.map(item =>
+        item._id === activity._id ? { ...item, completed: !item.completed } : item
       );
       setActivities(updatedActivities);
     } catch (err) {
-      Alert.alert('Erro', 'Não foi possível atualizar a atividade');
+      Alert.alert('Erro', 'Não foi possível atualizar a atividade.');
     }
   };
 
@@ -182,12 +167,19 @@ export default function App() {
   };
 
   const handleEdit = (activity) => {
-    const date = new Date(activity.date + 'T' + activity.time);
+    // Corrige a data para o fuso horário local ao editar
+    const dateWithOffset = new Date(activity.date);
+    const correctedDate = new Date(dateWithOffset.getTime() + dateWithOffset.getTimezoneOffset() * 60000);
+    
+    const [hours, minutes] = activity.time.split(':');
+    const timeDate = new Date();
+    timeDate.setHours(hours, minutes);
+
     setFormData({
       title: activity.title,
       description: activity.description,
-      date: new Date(activity.date),
-      time: date,
+      date: correctedDate,
+      time: timeDate,
       subject: activity.subject,
       priority: activity.priority
     });
@@ -206,19 +198,20 @@ export default function App() {
 
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
-    return date.toLocaleDateString('pt-BR');
+    const correctedDate = new Date(date.getTime() + date.getTimezoneOffset() * 60000);
+    return correctedDate.toLocaleDateString('pt-BR');
   };
 
   // Ordenar atividades por data
-  const sortedActivities = [...activities].sort((a, b) => 
-    new Date(a.date + ' ' + a.time) - new Date(b.date + ' ' + b.time)
+  const sortedActivities = [...activities].sort((a, b) =>
+    new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`)
   );
 
   // Renderizar item da lista
   const renderActivity = ({ item }) => (
     <TouchableOpacity
       style={[styles.activityCard, item.completed && styles.completedCard]}
-      onPress={() => toggleComplete(item.id)}
+      onPress={() => toggleComplete(item)}
     >
       <View style={styles.activityHeader}>
         <Text style={[styles.activityTitle, item.completed && styles.completedText]}>
@@ -226,8 +219,8 @@ export default function App() {
         </Text>
         <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(item.priority) }]}>
           <Text style={styles.priorityText}>
-            {item.priority === 'high' ? 'Alta' : 
-             item.priority === 'medium' ? 'Média' : 'Baixa'}
+            {item.priority === 'high' ? 'Alta' :
+              item.priority === 'medium' ? 'Média' : 'Baixa'}
           </Text>
         </View>
       </View>
@@ -254,12 +247,12 @@ export default function App() {
       <View style={styles.activityActions}>
         <TouchableOpacity
           style={[styles.actionButton, styles.completeButton]}
-          onPress={() => toggleComplete(item.id)}
+          onPress={() => toggleComplete(item)}
         >
-          <Ionicons 
-            name={item.completed ? "close-circle-outline" : "checkmark-circle-outline"} 
-            size={20} 
-            color={item.completed ? "#6b7280" : "#10b981"} 
+          <Ionicons
+            name={item.completed ? "close-circle-outline" : "checkmark-circle-outline"}
+            size={20}
+            color={item.completed ? "#6b7280" : "#10b981"}
           />
           <Text style={[styles.actionText, { color: item.completed ? "#6b7280" : "#10b981" }]}>
             {item.completed ? 'Reabrir' : 'Concluir'}
@@ -276,7 +269,7 @@ export default function App() {
           
           <TouchableOpacity
             style={styles.iconButton}
-            onPress={() => handleDelete(item.id)}
+            onPress={() => handleDelete(item._id)}
           >
             <Ionicons name="trash-outline" size={20} color="#ef4444" />
           </TouchableOpacity>
@@ -306,7 +299,10 @@ export default function App() {
         </View>
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => setShowForm(true)}
+          onPress={() => {
+            resetForm(); 
+            setShowForm(true);
+          }}
         >
           <Ionicons name="add" size={24} color="#ffffff" />
         </TouchableOpacity>
@@ -325,7 +321,7 @@ export default function App() {
         <FlatList
           data={sortedActivities}
           renderItem={renderActivity}
-          keyExtractor={item => item.id.toString()}
+          keyExtractor={item => item._id} // Usar _id do MongoDB
           contentContainerStyle={styles.listContainer}
           showsVerticalScrollIndicator={false}
         />
@@ -338,7 +334,7 @@ export default function App() {
         transparent={true}
         onRequestClose={resetForm}
       >
-        <KeyboardAvoidingView 
+        <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={styles.modalContainer}
         >
@@ -472,6 +468,7 @@ export default function App() {
         <DateTimePicker
           value={formData.time}
           mode="time"
+          is24Hour={true}
           display="default"
           onChange={(event, selectedTime) => {
             setShowTimePicker(false);
@@ -548,7 +545,8 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
   },
   completedCard: {
-    opacity: 0.7,
+    backgroundColor: '#f9f9f9', // Cor mais sutil para item completo
+    opacity: 0.8,
   },
   activityHeader: {
     flexDirection: 'row',
@@ -711,6 +709,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    height: 44 // Altura fixa para alinhar com o input
   },
   dateButtonText: {
     fontSize: 16,
